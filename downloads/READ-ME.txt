@@ -1,0 +1,21 @@
+Slugterra reworked place
+
+Open Slugterra-Reworked.rbxl with Roblox Studio: File > Open from File.
+Keep your original slug.rbxl as a backup. Press Play to test.
+
+Changes: reshaped 42 slug model templates; smoother faces and smaller teeth;
+wild slug hopping, landing squash and gentle turning; wider, three-shot battle
+intro; server-held attack lock through trainer projectile impact; natural
+boulder clusters, stone materials, lichen, glowing mushrooms and crystals;
+removed generated gate arches and rock ring clutter around the trainers.
+
+Verified offline: binary place loads after export, all active script sources
+compile in Luau, model root references are valid, and turn-timing tests cover
+attack locking, impact damage, victory/defeat and reset cancellation.
+
+Not verified: Roblox Studio rendering, real avatar loading, physics or camera
+transitions. The model-preview PNG is an offline geometry render, not a Studio
+screenshot. Models still use built-in smooth mesh primitives; no external
+uploaded custom meshes or texture assets are claimed.
+
+Existing inventory/coin persistence limitations remain unchanged.
