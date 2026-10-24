@@ -1,0 +1,188 @@
+-- STOP PLAY. Select the imported blaster's TOP MODEL in Explorer, then run.
+local Selection=game:GetService("Selection")
+local RS=game:GetService("ReplicatedStorage")
+local SP=game:GetService("StarterPlayer").StarterPlayerScripts
+local selected=Selection:Get()[1]
+local shared=RS:FindFirstChild("SlugPrototype")
+local server=game:GetService("ServerScriptService"):FindFirstChild("SlugPrototypeServer")
+if not selected or not selected:IsA("Model") then warn("Select the imported blaster's top Model in Explorer first.");return end
+if not shared or not server then warn("SlugPrototype game not found.");return end
+local function marker(model,name)
+ for _,p in ipairs(model:GetDescendants()) do if p:IsA("BasePart") and p.Name:lower():find(name:lower(),1,true) then return p end end
+end
+if not marker(selected,"GripAnchor") or not marker(selected,"MuzzleAnchor") or not marker(selected,"ChamberAnchor") or not marker(selected,"ChamberGlass") then
+ warn("Use the prepared SlugterraBlaster FBX/GLB. Grip, muzzle, chamber and glass markers must be included.");return
+end
+local model=selected:Clone()
+local _,size=model:GetBoundingBox();local longest=math.max(size.X,size.Y,size.Z)
+if longest<=0 then model:Destroy();warn("Imported model has no valid size.");return end
+model:ScaleTo(model:GetScale()*4.8/longest)
+local handle=marker(model,"GripAnchor")
+local muzzle=marker(model,"MuzzleAnchor")
+local chamber=marker(model,"ChamberAnchor")
+local glass=marker(model,"ChamberGlass")
+local muzzleFrame=handle.CFrame:ToObjectSpace(muzzle.CFrame)
+local chamberFrame=handle.CFrame:ToObjectSpace(chamber.CFrame)
+local chamberSize=chamber.Size
+local pack=game:GetService("StarterPack")
+local archive=Instance.new("Folder",game:GetService("ServerStorage"));archive.Name="BlasterBackup_"..os.time()
+local previous=pack:FindFirstChild("Slug Pistol");if previous then previous.Parent=archive end
+local tool=Instance.new("Tool");tool.Name="Slug Pistol";tool.RequiresHandle=true;tool.CanBeDropped=false;tool.Enabled=false
+model.Name="BlasterVisual";model.Parent=tool
+handle.Name="Handle";handle.Parent=tool;handle.Transparency=1
+local muzzleAttachment=Instance.new("Attachment",handle);muzzleAttachment.Name="Muzzle";muzzleAttachment.CFrame=muzzleFrame
+local chamberAttachment=Instance.new("Attachment",handle);chamberAttachment.Name="ChamberSlot";chamberAttachment.CFrame=chamberFrame
+local chamberLight=Instance.new("PointLight",chamberAttachment);chamberLight.Color=Color3.fromRGB(112,210,244);chamberLight.Range=2;chamberLight.Brightness=.35
+muzzle.Transparency=1;chamber.Transparency=1
+local palette={
+ {"metallic_orange",Color3.fromRGB(231,91,12)},
+ {"metallic_white",Color3.fromRGB(231,231,231)},
+ {"more_metallic_gray",Color3.fromRGB(196,196,196)},
+ {"blue_n_gray",Color3.fromRGB(36,67,78)},
+ {"logo",Color3.fromRGB(0,21,231)},
+ {"_ss",Color3.fromRGB(226,226,226)},
+ {"gray_metal",Color3.fromRGB(57,58,60)}
+}
+for _,p in ipairs(tool:GetDescendants()) do
+ if p:IsA("BasePart") then
+  p.Anchored=false;p.CanCollide=false;p.CanTouch=false;p.Massless=true
+  if p~=handle then local weld=Instance.new("WeldConstraint",p);weld.Part0=handle;weld.Part1=p end
+  if p~=handle and p~=muzzle and p~=chamber and p~=glass then
+   p.Material=p.Name:lower():find("blue",1,true) and Enum.Material.SmoothPlastic or Enum.Material.Metal
+   local surface=p:FindFirstChildOfClass("SurfaceAppearance")
+   if not surface or surface.ColorMap=="" then for _,entry in ipairs(palette) do if p.Name:lower():find(entry[1],1,true) then p.Color=entry[2];break end end end
+  end
+ end
+end
+local surface=glass:FindFirstChildOfClass("SurfaceAppearance");if surface then surface:Destroy() end
+glass.Material=Enum.Material.Glass;glass.Color=Color3.fromRGB(86,197,239);glass.Transparency=.65;glass.Reflectance=.05;glass.CastShadow=false
+tool.Grip=CFrame.new(0,-.1,0)*CFrame.Angles(math.rad(-8),0,0)
+tool:SetAttribute("ChamberSize",chamberSize);tool:SetAttribute("ImportedSlugBlaster",true);tool.Parent=pack
+local existing=shared:FindFirstChild("BlasterChamberService");if existing then existing:Destroy() end
+local service=Instance.new("ModuleScript",shared);service.Name="BlasterChamberService"
+service.Source=[====[
+local RS=game:GetService("ReplicatedStorage")
+local S={}
+function S.Clear(tool)
+ local old=tool and tool:FindFirstChild("LoadedSlug");if old then old:Destroy() end
+end
+function S.Render(tool,s)
+ S.Clear(tool);if not tool or not s then return end
+ local handle=tool:FindFirstChild("Handle");local slot=handle and handle:FindFirstChild("ChamberSlot")
+ local limit=tool:GetAttribute("ChamberSize");if not handle or not slot or not limit then return end
+ local shared=RS:FindFirstChild("SlugPrototype");if not shared then return end
+ local forms=shared:FindFirstChild("CreatureForms");local model
+ if forms then model=require(forms).Build(s,false) else
+  local library=shared:FindFirstChild("OwnedSlugModels") or shared:FindFirstChild("SlugModels")
+  local names={"Ember","Tide","Bloom","Spark","Frost","Shade","Nova"}
+  local template=library and library:FindFirstChild(s.modelKey or names[s.element]);if template then model=template:Clone() end
+ end
+ if not model then return end
+ local _,size=model:GetBoundingBox()
+ -- Lay the slug along the tube; fit all fins/antennae within the glass.
+ local factor=math.min(limit.X/math.max(size.X,.001),limit.Y/math.max(size.Z,.001),limit.Z/math.max(size.Y,.001))*.8
+ model:ScaleTo(model:GetScale()*factor)
+ local box=model:GetBoundingBox();local center=model:GetPivot():PointToObjectSpace(box.Position)
+ model:PivotTo(slot.WorldCFrame*CFrame.Angles(math.pi/2,0,0)*CFrame.new(-center))
+ model.Name="LoadedSlug";model.Parent=tool
+ for _,p in ipairs(model:GetDescendants()) do
+  if p:IsA("BasePart") then p.Anchored=false;p.CanCollide=false;p.CanTouch=false;p.CanQuery=false;p.Massless=true;local weld=Instance.new("WeldConstraint",p);weld.Part0=handle;weld.Part1=p end
+ end
+ tool:SetAttribute("LoadedSlugId",s.id);tool:SetAttribute("LoadedSlugName",s.name)
+end
+return S
+]====]
+local remote=shared:FindFirstChild("SelectChamberSlug") or Instance.new("RemoteEvent",shared);remote.Name="SelectChamberSlug"
+if not server.Source:find("IMPORTED_BLASTER_CHAMBER_V1",1,true) then
+ local text=server.Source
+ local damage='d.enemy=math.max(0,d.enemy-selected.power)'
+ local a,b=text:find(damage,1,true)
+ if a then text=text:sub(1,b)..'\nd.chamberShotSerial=(d.chamberShotSerial or 0)+1\n'..text:sub(b+1) end
+ local showoff='shared.CosmeticShot:FireAllClients'
+ a,b=text:find(showoff,1,true)
+ if a then text=text:sub(1,a-1)..'d.chamberShowoffSerial=(d.chamberShowoffSerial or 0)+1\n'..text:sub(a) end
+ server.Source=text
+ server.Source ..= [==[
+-- IMPORTED_BLASTER_CHAMBER_V1
+ do
+  local shared=game:GetService("ReplicatedStorage").SlugPrototype
+  local chamber=require(shared.BlasterChamberService)
+  local cooldown,tickets,shots,shows={},{},{},{}
+  local function findSlug(d,id)
+   for _,s in ipairs(d.slugs) do if s.id==id then return s end end
+  end
+  local function equipped(d,id)
+   for i=1,3 do if d.loadout and d.loadout[i]==id then return true end end
+   return false
+  end
+  local function getTool(p)
+   local backpack=p:FindFirstChildOfClass("Backpack")
+   return (p.Character and p.Character:FindFirstChild("Slug Pistol")) or (backpack and backpack:FindFirstChild("Slug Pistol"))
+  end
+  local function render(p)
+   local d=data[p];if not d then return end
+   local s=d.chamberSlugID and equipped(d,d.chamberSlugID) and findSlug(d,d.chamberSlugID)
+   if not s then for i=1,3 do s=d.loadout and findSlug(d,d.loadout[i]);if s then break end end end
+   chamber.Render(getTool(p),s)
+  end
+  local function fire(p,id,duration)
+   local d=data[p];if not d or not equipped(d,id) or not findSlug(d,id) then return end
+   d.chamberSlugID=id;tickets[p]=(tickets[p] or 0)+1;local ticket=tickets[p]
+   render(p)
+   task.delay(.35,function() if data[p]==d and tickets[p]==ticket then chamber.Clear(getTool(p)) end end)
+   task.delay(duration,function() if data[p]==d and tickets[p]==ticket then render(p) end end)
+  end
+  shared.SelectChamberSlug.OnServerEvent:Connect(function(p,id)
+   local d=data[p];if not d or type(id)~="string" or not equipped(d,id) or not findSlug(d,id) then return end
+   local now=os.clock();if cooldown[p] and now-cooldown[p]<.1 then return end;cooldown[p]=now
+   d.chamberSlugID=id;if not d.busy then render(p) end
+  end)
+  shared.Action.OnServerEvent:Connect(function(p,action,id)
+   local d=data[p];if not d then return end
+   if action=="Attack" and d.enemy and d.busy and d.chamberShotSerial and shots[p]~=d.chamberShotSerial then shots[p]=d.chamberShotSerial;fire(p,id,6.2)
+   elseif action=="Merge" or action=="DeleteSlug" or action=="Sync" then if not d.busy then render(p) end end
+  end)
+  local sim=shared:FindFirstChild("SimulatorAction")
+  if sim then sim.OnServerEvent:Connect(function(p,action,slot)
+   local d=data[p];if action=="Showoff" and d and d.busy and not d.enemy and type(slot)=="number" and slot%1==0 and slot>=1 and slot<=3 and d.chamberShowoffSerial and shows[p]~=d.chamberShowoffSerial then shows[p]=d.chamberShowoffSerial;fire(p,d.loadout and d.loadout[slot],5.2) end
+  end) end
+  local function bind(p)
+   local function character(char)
+    char.ChildAdded:Connect(function(child) if child:IsA("Tool") and child.Name=="Slug Pistol" then task.defer(render,p) end end)
+   end
+   p.CharacterAdded:Connect(character);if p.Character then character(p.Character) end
+  end
+  Players.PlayerAdded:Connect(bind);for _,p in ipairs(Players:GetPlayers()) do bind(p) end
+  Players.PlayerRemoving:Connect(function(p) cooldown[p]=nil;tickets[p]=nil;shots[p]=nil;shows[p]=nil end)
+ end
+]==]
+end
+local oldClient=SP:FindFirstChild("SelectedSlugChamber");if oldClient then oldClient:Destroy() end
+local client=Instance.new("LocalScript");client.Name="SelectedSlugChamber"
+client.Source=[====[
+local Players=game:GetService("Players")
+local RS=game:GetService("ReplicatedStorage")
+local player=Players.LocalPlayer
+local shared=RS:WaitForChild("SlugPrototype")
+local remote=shared:WaitForChild("SelectChamberSlug")
+local state,last
+local function send()
+ if not state then return end
+ local id=player:GetAttribute("SelectedSlug")
+ local function ownedAndEquipped(value)
+  local owns=false;for _,s in ipairs(state.slugs) do if s.id==value then owns=true;break end end
+  if owns then for i=1,3 do if state.loadout and state.loadout[i]==value then return true end end end
+  return false
+ end
+ if not ownedAndEquipped(id) then id=nil;for i=1,3 do local candidate=state.loadout and state.loadout[i];if candidate and ownedAndEquipped(candidate) then id=candidate;break end end end
+ if id and id~=last then last=id;remote:FireServer(id) end
+end
+player:GetAttributeChangedSignal("SelectedSlug"):Connect(send)
+player.CharacterAdded:Connect(function() last=nil;task.delay(.5,send) end)
+shared.Action.OnClientEvent:Connect(function(d) state=d;send() end)
+shared.Action:FireServer("Sync")
+]====]
+client.Parent=SP
+selected.Parent=archive
+print("IMPORTED BLASTER INSTALLED. Press Play, choose a capsule, and draw/fire the gun.")
+print("The selected equipped slug appears inside the blue chamber, leaves when fired, then reloads.")
