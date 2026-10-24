@@ -1,0 +1,475 @@
+-- Save your place and stop Play. Run once in the Command Bar.
+local RS=game:GetService("ReplicatedStorage")
+local SP=game:GetService("StarterPlayer").StarterPlayerScripts
+local shared=RS:FindFirstChild("SlugPrototype")
+local server=game:GetService("ServerScriptService"):FindFirstChild("SlugPrototypeServer")
+if not shared or not server then warn("SlugPrototype not found.");return end
+if not server.Source:find("local function simTeamMultiplier",1,true) or not workspace:FindFirstChild("TrainerCast") then warn("This update needs the existing simulator economy and humanoid trainers. Nothing changed.");return end
+local config=shared:FindFirstChild("ExpansionConfig")
+if not config then
+ config=Instance.new("ModuleScript",shared);config.Name="ExpansionConfig"
+ config.Source=[====[
+return {
+ Areas={"Bloom Cavern","Crystal Basin","Ember Summit","Mossy Hollows","Storm Grotto","Astral Depths"},
+ Passes={}, -- Game passes deferred. Add real IDs here later.
+ UpgradeMax=20,
+ ClashDuration=5,
+}
+]====]
+end
+for _,name in {"ExpansionAction","ClashEvent"} do if not shared:FindFirstChild(name) then local r=Instance.new("RemoteEvent",shared);r.Name=name end end
+game:GetService("StarterPlayer").EnableMouseLockOption=false
+local source=server.Source
+if not source:find("EXPANSION_CLASH_V1",1,true) then
+ local attack=source:find('elseif action == "Attack" then',1,true) and 'elseif action == "Attack" then' or 'elseif action=="Attack" then'
+ local a,b=source:find(attack,1,true)
+ if not a then warn("Attack handler differs. Nothing installed.");return end
+ source='local expansionAttack\n'..source:sub(1,b)..'\nif expansionAttack then expansionAttack(p,a);return end\n'..source:sub(b+1)
+ source=source:gsub('math.min%(3,math.max%(d.unlocked,d.area%+1%)%)','math.min(6,math.max(d.unlocked,d.area+1))')
+ source=source:gsub('and unlocked<3','and unlocked<6')
+ local needle='return math.floor(result*100+.5)/100'
+ local a,b=source:find(needle,1,true)
+ if a then source=source:sub(1,a-1)..'return math.floor(result*(1+.05*((d.upgrades and d.upgrades.Coins) or 0))*(d.passes and d.passes.DoubleCoins and 2 or 1)*(d.passes and d.passes.VIP and 1.25 or 1)*100+.5)/100'..source:sub(b+1) end
+ source=source:gsub('for area=1,3 do','for area=1,6 do')
+ source=source:gsub('spawnWild%(random:NextInteger%(1,3%),true%)','spawnWild(random:NextInteger(1,6),true)')
+ source=source:gsub('%(%{"Bloom Cavern",%s*"Crystal Basin",%s*"Ember Summit"%}%)%[area%]','({"Bloom Cavern","Crystal Basin","Ember Summit","Mossy Hollows","Storm Grotto","Astral Depths"})[area]')
+ local f='d.friendTrainers=mapFriends(sample)';a,b=source:find(f,1,true)
+ if a then source=source:sub(1,b)..'\nfor i=4,6 do local friend=d.friendTrainers[(i-1)%3+1];d.friendTrainers[i]={id=friend.id,name=friend.id>0 and friend.name or ({"Mossy Hollows","Storm Grotto","Astral Depths"})[i-3].." Trainer"} end\n'..source:sub(b+1) end
+ source ..= [==[
+-- EXPANSION_CLASH_V1
+ do
+  local RS=game:GetService("ReplicatedStorage")
+  local Market=game:GetService("MarketplaceService")
+  local Run=game:GetService("RunService")
+  local shared=RS.SlugPrototype
+  local C=require(shared.ExpansionConfig)
+  local api,event=shared.ExpansionAction,shared.ClashEvent
+  local rounds,last={},{}
+  local prices={Damage=100,Coins=150,Speed=100}
+  local function init(d) d.upgrades=d.upgrades or {Damage=0,Coins=0,Speed=0};d.passes=d.passes or {} end
+  local function selected(d,id)
+   local eq=false;for i=1,3 do if d.loadout and d.loadout[i]==id then eq=true end end
+   if eq then for _,s in ipairs(d.slugs) do if s.id==id then return s end end end
+  end
+  local function refreshPasses(p)
+   local d=data[p];if not d then return end;init(d)
+   for _,pass in ipairs(C.Passes) do if type(pass.Id)=="number" and pass.Id>0 then
+    local ok,owns=pcall(function() return Market:UserOwnsGamePassAsync(p.UserId,pass.Id) end)
+    if data[p]~=d then return end;if ok then d.passes[pass.Kind]=owns end
+   end end
+   update(p,"")
+  end
+  local function valid(p,r)
+   return data[p]==r.profile and rounds[p]==r and r.profile.enemy~=nil and (r.profile.fixedBattleTicket or 0)==r.ticket and p.Character and p.Character:FindFirstChildOfClass("Humanoid") and p.Character:FindFirstChildOfClass("Humanoid").Health>0
+  end
+  expansionAttack=function(p,id)
+   local d=data[p];if not d then return end;init(d)
+   if not d.enemy or d.busy or rounds[p] or os.clock()<(d.introUntil or 0) then return end
+   local s=type(id)=="string" and selected(d,id);if not s then return end
+   local char=p.Character;local hum=char and char:FindFirstChildOfClass("Humanoid");if not hum or hum.Health<=0 then return end
+   local backpack=p:FindFirstChildOfClass("Backpack");local gun=char:FindFirstChild("Slug Pistol") or (backpack and backpack:FindFirstChild("Slug Pistol"));if gun then hum:EquipTool(gun) end
+   local r={profile=d,ticket=d.fixedBattleTicket or 0,token=game:GetService("HttpService"):GenerateGUID(false),score=0,lastTap=-math.huge,start=os.clock()+1.4}
+   r.finish=r.start+C.ClashDuration;r.target=17+(d.area or 1)*3
+   rounds[p]=r;d.expansionCombat=true;d.busy=true;d.chamberShotSerial=(d.chamberShotSerial or 0)+1;d.trainerAttacking=false
+   update(p,s.name.." launches into a clash!")
+   event:FireClient(p,{Kind="Begin",Token=r.token,Duration=C.ClashDuration,StartAt=workspace:GetServerTimeNow()+1.4,EndAt=workspace:GetServerTimeNow()+1.4+C.ClashDuration,Target=r.target,Slug=s,Area=d.area or 1})
+   task.delay(1.4+C.ClashDuration,function()
+    if not valid(p,r) then if rounds[p]==r then rounds[p]=nil end;if p.Parent then event:FireClient(p,{Kind="Cancel"}) end;return end
+    local win=r.score>=r.target
+    local resolvedDamage=win and math.floor(s.power*(1+.1*d.upgrades.Damage)*(1+math.min(.5,r.score/r.target*.3))) or (15+(d.area or 1)*3)
+    event:FireClient(p,{Kind="Result",Win=win,Score=r.score,Damage=resolvedDamage})
+    task.delay(1.3,function()
+     if not valid(p,r) then if rounds[p]==r then rounds[p]=nil end;return end
+     rounds[p]=nil
+     if win then
+      local damage=math.floor(s.power*(1+.1*d.upgrades.Damage)*(1+math.min(.5,r.score/r.target*.3)))
+      d.enemy=math.max(0,d.enemy-damage)
+      if d.enemy<=0 then
+       d.enemy=nil;local coins=math.floor(80*simTeamMultiplier(d));d.coins+=coins;d.capsules+=1;d.unlocked=math.min(#C.Areas,math.max(d.unlocked,(d.area or 1)+1));d.busy=false
+       update(p,"Victory! Clash dealt "..damage.." damage. +"..coins.." coins and a capsule.")
+      else d.busy=false;update(p,"Clash won! "..damage.." damage. Choose your next capsule.") end
+     else
+      local damage=15+(d.area or 1)*3;d.hp=math.max(0,d.hp-damage);d.busy=false
+      if d.hp==0 then d.enemy=nil;update(p,"Defeated! Your slugs recovered.") else update(p,"Clash lost! Trainer dealt "..damage.." damage.") end
+     end
+    end)
+   end)
+  end
+  api.OnServerEvent:Connect(function(p,action,value,token)
+   local d=data[p];if not d then return end;init(d)
+   if action=="Tap" then
+    local r=rounds[p];local now=os.clock()
+    if r and token==r.token and valid(p,r) and now>=r.start and now<=r.finish and now-r.lastTap>=1/12 and r.score<60 then r.lastTap=now;r.score+=1;event:FireClient(p,{Kind="Score",Score=r.score}) end
+    return
+   end
+   if action=="Sprint" then if type(value)=="boolean" then d.sprinting=value end;return end
+   if action=="Sync" then update(p,"");return end
+   if d.busy or d.enemy or d.starterChosen==false then update(p,"Finish your battle or animation first.");return end
+   local now=os.clock();if last[p] and now-last[p]<.25 then return end;last[p]=now
+   if action=="Upgrade" then
+    local base=type(value)=="string" and prices[value];if not base then return end
+    local level=d.upgrades[value] or 0;local cost=base*(level+1)^2
+    if level>=C.UpgradeMax then update(p,"Upgrade already maxed.");return end
+    if d.coins<cost then update(p,"Not enough coins.");return end
+    d.coins-=cost;d.upgrades[value]=level+1;update(p,value.." upgraded to level "..(level+1).."!")
+   elseif action=="Travel" then
+    if type(value)~="number" or value%1~=0 or value<1 or value>#C.Areas or value>d.unlocked then return end
+    local char=p.Character;local root=char and char:FindFirstChild("HumanoidRootPart")
+    if root then char:PivotTo(CFrame.lookAt(Vector3.new((value-1)*120,4,30),Vector3.new((value-1)*120,4,-20)));update(p,"Arrived at "..C.Areas[value]..".") end
+   end
+  end)
+  local elapsed=0
+  Run.Heartbeat:Connect(function(dt)
+   elapsed+=dt;if elapsed<.2 then return end;elapsed=0
+   for p,r in pairs(rounds) do
+    if not valid(p,r) then
+     rounds[p]=nil
+     if data[p]==r.profile and (r.profile.fixedBattleTicket or 0)==r.ticket then
+      r.profile.busy=false
+      local hum=p.Character and p.Character:FindFirstChildOfClass("Humanoid")
+      if not hum or hum.Health<=0 then r.profile.enemy=nil end
+      if p.Parent then update(p,"Clash canceled.") end
+     end
+     if p.Parent then event:FireClient(p,{Kind="Cancel"}) end
+    end
+   end
+   for p,d in pairs(data) do
+    local hum=p.Character and p.Character:FindFirstChildOfClass("Humanoid")
+    if hum and not p:GetAttribute("InFixedBattle") and d.starterChosen~=false then init(d);hum.WalkSpeed=d.sprinting and (24+.4*d.upgrades.Speed+(d.passes.Swift and 6 or 0)) or (16+.5*d.upgrades.Speed) end
+   end
+  end)
+  Market.PromptGamePassPurchaseFinished:Connect(function(p,id,purchased)
+   if not purchased then return end
+   for _,pass in ipairs(C.Passes) do if pass.Id==id and id>0 then task.delay(1,function() refreshPasses(p) end);break end end
+  end)
+  Players.PlayerAdded:Connect(function(p) task.delay(.5,function() refreshPasses(p) end) end)
+  for _,p in ipairs(Players:GetPlayers()) do task.spawn(refreshPasses,p) end
+  Players.PlayerRemoving:Connect(function(p) rounds[p]=nil;last[p]=nil end)
+ end
+]==]
+end
+server.Source=source
+-- Audio remains bundled placeholder audio; real animal recordings can replace it later.
+local effects=shared:FindFirstChild("SlugEffects")
+if not effects then effects=Instance.new("ModuleScript",shared);effects.Name="SlugEffects";effects.Source=[====[
+local Tween=game:GetService("TweenService")
+local Debris=game:GetService("Debris")
+local SoundService=game:GetService("SoundService")
+local FX={}
+local group=SoundService:FindFirstChild("SlugEffects")
+if not group then group=Instance.new("SoundGroup",SoundService);group.Name="SlugEffects";group.Volume=.55 end
+-- Bundled Roblox sounds: no uploaded audio IDs are required.
+local sounds={
+ Load={"action_get_up.mp3",.2,1.7,.6},
+ Shot={"action_jump_land.mp3",.55,.7,.6},
+ Charge={"action_falling.ogg",.25,1.6,.9},
+ Hit={"action_jump_land.mp3",.6,.65,.7},
+ Water={"impact_water.mp3",.35,1.4,.7},
+ Tick={"action_jump.mp3",.07,2.4,.12},
+ Reveal={"action_jump.mp3",.32,1.5,.7}
+}
+local function anchor(position)
+ local p=Instance.new("Part",workspace);p.Name="LocalSlugFX";p.Size=Vector3.one*.1;p.Position=position;p.Transparency=1;p.Anchored=true;p.CanCollide=false;p.CanTouch=false;p.CanQuery=false;Debris:AddItem(p,3);return p
+end
+function FX.Sound(name,position)
+ local config=sounds[name];if not config then return end
+ local sound=Instance.new("Sound");sound.SoundId="rbxasset://sounds/"..config[1];sound.Volume=config[2];sound.PlaybackSpeed=config[3];sound.SoundGroup=group;sound.RollOffMinDistance=8;sound.RollOffMaxDistance=100
+ sound.Parent=position and anchor(position) or SoundService;sound:Play()
+ task.delay(config[4],function() if sound.Parent then Tween:Create(sound,TweenInfo.new(.1),{Volume=0}):Play() end end)
+ Debris:AddItem(sound,config[4]+.2)
+end
+local function orb(position,size,color)
+ local p=Instance.new("Part",workspace);p.Name="SlugEnergy";p.Shape=Enum.PartType.Ball;p.Size=Vector3.one*size;p.Position=position;p.Color=color;p.Material=Enum.Material.Neon;p.Anchored=true;p.CanCollide=false;p.CanTouch=false;p.CanQuery=false;Debris:AddItem(p,1.2);return p
+end
+function FX.Ring(position,color,radius)
+ for i=1,12 do
+  local angle=i*math.pi/6
+  local p=orb(position+Vector3.new(math.cos(angle),.1,math.sin(angle))*.5,.13,color)
+  Tween:Create(p,TweenInfo.new(.45,Enum.EasingStyle.Quad),{Position=position+Vector3.new(math.cos(angle)*radius,.15,math.sin(angle)*radius),Transparency=1,Size=Vector3.one*.04}):Play()
+ end
+end
+function FX.Burst(position,color,count)
+ local core=orb(position,.3,color:Lerp(Color3.new(1,1,1),.5))
+ Tween:Create(core,TweenInfo.new(.35),{Size=Vector3.one*3,Transparency=1}):Play()
+ local light=Instance.new("PointLight",core);light.Color=color;light.Range=16;light.Brightness=1.5
+ Tween:Create(light,TweenInfo.new(.35),{Brightness=0}):Play()
+ for i=1,count or 14 do
+  local dir=Vector3.new(math.random()-.5,math.random()-.15,math.random()-.5)
+  local p=orb(position,.12+math.random()*.13,color)
+  Tween:Create(p,TweenInfo.new(.55),{Position=position+dir*10,Transparency=1,Size=Vector3.one*.025}):Play()
+ end
+end
+function FX.Muzzle(position,color)
+ FX.Sound("Shot",position);FX.Burst(position,color,9)
+end
+function FX.Transform(position,color)
+ FX.Sound("Charge",position);FX.Ring(position,color,4);FX.Burst(position,color,12)
+end
+function FX.Hit(position,color,element)
+ FX.Sound((element==2 or element==5) and "Water" or "Hit",position)
+ FX.Ring(position,color,5);FX.Burst(position,color,18)
+end
+function FX.Fusion(position,color)
+ FX.Sound("Load",position)
+ for i=1,3 do task.delay((i-1)*.22,function() FX.Ring(position+Vector3.new(0,i*.35,0),color,2+i) end) end
+ task.delay(.55,function() FX.Transform(position,color);FX.Sound("Reveal",position) end)
+end
+function FX.Trail(model)
+ if model:GetAttribute("PolishedSlugTrail") then return end
+ local root=model.PrimaryPart;if not root then return end
+ model:SetAttribute("PolishedSlugTrail",true)
+ local a=Instance.new("Attachment",root);a.Position=Vector3.new(-.3,0,.2)
+ local b=Instance.new("Attachment",root);b.Position=Vector3.new(.3,0,.2)
+ local trail=Instance.new("Trail",root);trail.Attachment0=a;trail.Attachment1=b;trail.Lifetime=.32;trail.LightEmission=.8
+ trail.Color=ColorSequence.new(root.Color:Lerp(Color3.new(1,1,1),.4),root.Color)
+ trail.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,.2),NumberSequenceKeypoint.new(1,1)})
+ trail.WidthScale=NumberSequence.new({NumberSequenceKeypoint.new(0,.75),NumberSequenceKeypoint.new(1,0)})
+end
+return FX
+]====] end
+if effects and not effects.Source:find('Cry={',1,true) then effects.Source=effects.Source:gsub('local sounds={','local sounds={\n Cry={"action_swim.mp3",.22,2.1,.3},\n Powerup={"action_falling.ogg",.3,1.7,.8},',1) end
+local presentation=SP:FindFirstChild("SlugPresentation")
+if presentation and not presentation.Source:find("CREATURE_CRY_V1",1,true) then
+ local text=presentation.Source
+ local function replace(needle,value)
+  local start=1;while true do local a,b=text:find(needle,start,true);if not a then break end;text=text:sub(1,a-1)..value..text:sub(b+1);start=a+#value end
+ end
+ if text:find('SlugFX.Muzzle(start,color)',1,true) then
+  replace('SlugFX.Muzzle(start,color)','SlugFX.Sound("Cry",start);SlugFX.Muzzle(start,color)')
+  replace('SlugFX.Transform(reveal,color)','SlugFX.Sound("Powerup",reveal);SlugFX.Transform(reveal,color)')
+ else
+  text='local ExpansionFX=require(game:GetService("ReplicatedStorage").SlugPrototype.SlugEffects)\n'..text
+  replace('burst(fx,start,color)','ExpansionFX.Sound("Cry",start);ExpansionFX.Muzzle(start,color)')
+  replace('burst(fx,reveal,color)','ExpansionFX.Sound("Powerup",reveal);ExpansionFX.Transform(reveal,color)')
+ end
+ presentation.Source='-- CREATURE_CRY_V1\n'..text
+end
+local hud=SP:FindFirstChild("SimulatorHUD")
+if hud then
+ local text=hud.Source
+ if not text:find('OpenExpansionShop',1,true) then
+  local marker='button(footer,"OPEN ONE • CAPSULE OR 50 COINS",'
+  local a=text:find(marker,1,true)
+  if a then
+   local x,y=text:find('UDim2.fromOffset(700,44)',a,true)
+   if x then text=text:sub(1,x-1)..'UDim2.fromOffset(335,44)'..text:sub(y+1) end
+   x,y=text:find('end,Color3.fromRGB(62,162,113))',a,true)
+   if x then text=text:sub(1,y)..'\nbutton(footer,"UPGRADES",UDim2.fromOffset(350,44),UDim2.fromOffset(350,5),function() player:SetAttribute("OpenExpansionShop",os.clock()) end)\n'..text:sub(y+1) end
+  end
+  if not text:find("EXPANSION_DAMAGE_LABELS",1,true) then
+   local position=text:find('local function team(d)',1,true)
+   if position then
+    local start=1
+    while true do local a,b=text:find('s.power',start,true);if not a then break end;text=text:sub(1,a-1)..'combatDamage(s)'..text:sub(b+1);start=a+15 end
+    position=text:find('local function team(d)',1,true)
+    text=text:sub(1,position-1)..'-- EXPANSION_DAMAGE_LABELS\nlocal function combatDamage(s) return math.floor(s.power*(1+.1*((state and state.upgrades and state.upgrades.Damage) or 0))) end\n'..text:sub(position)
+   end
+  end
+  local marker='return math.floor(total*100+.5)/100' 
+  local x,y=text:find(marker,1,true)
+  if x then text=text:sub(1,x-1)..'return math.floor(total*(1+.05*((d.upgrades and d.upgrades.Coins) or 0))*(d.passes and d.passes.DoubleCoins and 2 or 1)*(d.passes and d.passes.VIP and 1.25 or 1)*100+.5)/100'..text:sub(y+1) end
+ end
+ hud.Source=text
+end
+local polish=SP:FindFirstChild("BattlePolishClient")
+if polish then
+ local text=polish.Source:gsub('task.delay%(2.5,','task.delay(0,')
+ local needle='if state and d.area==state.area then';local a,b=text:find(needle,1,true)
+ if a then text=text:sub(1,a-1)..'if state and d.area==state.area and not d.expansionCombat then'..text:sub(b+1) end
+ polish.Source=text
+end
+-- Existing imported chamber waits for a complete clash before reloading.
+local needle='task.delay(duration,function() if data[p]==d and tickets[p]==ticket then render(p) end end)'
+local a,b=server.Source:find(needle,1,true)
+if a then server.Source=server.Source:sub(1,a-1)..'task.delay(duration,function() while data[p]==d and tickets[p]==ticket and d.busy do task.wait(.2) end;if data[p]==d and tickets[p]==ticket then render(p) end end)'..server.Source:sub(b+1) end
+local old=workspace:FindFirstChild("ExpandedAreas");if old then old:Destroy() end
+local areas=Instance.new("Folder",workspace);areas.Name="ExpandedAreas"
+local cast=workspace:FindFirstChild("TrainerCast")
+local template=cast and cast:GetChildren()[1]
+local gates=workspace:FindFirstChild("CavernArt") and workspace.CavernArt:FindFirstChild("ProgressGates")
+local function part(name,size,pos,color,material,ball)
+ local p=Instance.new("Part",areas);p.Name=name;p.Size=size;p.Position=pos;p.Color=color;p.Material=material;p.Anchored=true;p.Shape=ball and Enum.PartType.Ball or Enum.PartType.Block;return p
+end
+local tints={Color3.fromRGB(86,133,94),Color3.fromRGB(82,105,158),Color3.fromRGB(122,84,158)}
+local names={"Mossy Hollows","Storm Grotto","Astral Depths"}
+for i=1,3 do
+ local area=i+3;local x=(area-1)*120;local c=tints[i]
+ part(names[i],Vector3.new(118,6,280),Vector3.new(x,-2,80),c:Lerp(Color3.fromRGB(45,58,68),.55),Enum.Material.Slate)
+ part("Trail",Vector3.new(118,.15,12),Vector3.new(x,1.1,0),Color3.fromRGB(122,141,151),Enum.Material.Cobblestone)
+ for j=1,16 do
+  local side=j%2==0 and -1 or 1;local z=-35+j*15
+  part("CaveBoulder",Vector3.new(10+j%3*2,6+j%4*2,10),Vector3.new(x+side*45,3,z),c,Enum.Material.Rock,true)
+  local stem=part("Mushroom",Vector3.new(.5,3,.5),Vector3.new(x+side*34,2.5,z),Color3.fromRGB(172,196,180),Enum.Material.SmoothPlastic,true)
+  local cap=part("GlowingCap",Vector3.new(4,.8,4),stem.Position+Vector3.new(0,1.7,0),c:Lerp(Color3.new(.4,1,1),.5),Enum.Material.Neon,true)
+ end
+ if template then
+  for _,r in ipairs(cast:GetChildren()) do if r:GetAttribute("Area")==area then r:Destroy() end end
+  local npc=template:Clone();npc.Name=names[i].." Trainer";npc:SetAttribute("Area",area);npc:PivotTo(CFrame.lookAt(Vector3.new(x,4,-20),Vector3.new(x,4,12)));npc.Parent=cast
+  for _,v in ipairs(npc:GetDescendants()) do if v:IsA("TextLabel") then v.Text=npc.Name elseif v:IsA("ProximityPrompt") then v.ObjectText=npc.Name end end
+ end
+ if gates and not gates:FindFirstChild("Gate"..area) then local gate=Instance.new("Part",gates);gate.Name="Gate"..area;gate.Size=Vector3.new(3,20,270);gate.Position=Vector3.new(x-60,10,80);gate.Anchored=true;gate.Material=Enum.Material.ForceField;gate.Color=c;gate.Transparency=.4;gate.CanCollide=false;gate:SetAttribute("RequiredArea",area) end
+end
+local oldClient=SP:FindFirstChild("ExpansionClient");if oldClient then oldClient:Destroy() end
+local client=Instance.new("LocalScript");client.Name="ExpansionClient"
+client.Source=[====[
+local Players=game:GetService("Players")
+local RS=game:GetService("ReplicatedStorage")
+local Input=game:GetService("UserInputService")
+local Market=game:GetService("MarketplaceService")
+local Run=game:GetService("RunService")
+local Tween=game:GetService("TweenService")
+local Debris=game:GetService("Debris")
+local player=Players.LocalPlayer
+local shared=RS:WaitForChild("SlugPrototype")
+local C=require(shared:WaitForChild("ExpansionConfig"))
+local api,event=shared:WaitForChild("ExpansionAction"),shared:WaitForChild("ClashEvent")
+local forms=shared:FindFirstChild("CreatureForms") and require(shared.CreatureForms)
+local FX=shared:FindFirstChild("SlugEffects") and require(shared.SlugEffects)
+local state,mode=nil,"Upgrades"
+local gui=Instance.new("ScreenGui",player:WaitForChild("PlayerGui"));gui.Name="ExpansionMenus";gui.ResetOnSpawn=false;gui.DisplayOrder=40
+local function text(parent,value,size,pos,font)
+ local l=Instance.new("TextLabel",parent);l.Text=value;l.Size=size;l.Position=pos;l.BackgroundTransparency=1;l.TextColor3=Color3.new(1,1,1);l.Font=Enum.Font.GothamBold;l.TextSize=font or 15;l.TextWrapped=true;return l
+end
+local function button(parent,value,size,pos,callback)
+ local b=Instance.new("TextButton",parent);b.Text=value;b.Size=size;b.Position=pos;b.BackgroundColor3=Color3.fromRGB(54,94,147);b.TextColor3=Color3.new(1,1,1);b.Font=Enum.Font.GothamBold;b.TextSize=14;Instance.new("UICorner",b);b.Activated:Connect(callback);return b
+end
+local panel=Instance.new("Frame",gui);panel.Size=UDim2.fromOffset(600,430);panel.AnchorPoint=Vector2.new(.5,.5);panel.Position=UDim2.fromScale(.5,.5);panel.BackgroundColor3=Color3.fromRGB(21,35,54);panel.Visible=false;Instance.new("UICorner",panel)
+local scale=Instance.new("UIScale",panel);local function resize() local v=workspace.CurrentCamera.ViewportSize;scale.Scale=math.min(1,v.X/650,v.Y/480) end;resize();workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(resize)
+local heading=text(panel,"UPGRADES",UDim2.fromOffset(520,40),UDim2.fromOffset(15,8),23)
+button(panel,"×",UDim2.fromOffset(35,35),UDim2.fromOffset(550,10),function() panel.Visible=false end)
+local body=Instance.new("ScrollingFrame",panel);body.Size=UDim2.fromOffset(570,290);body.Position=UDim2.fromOffset(15,120);body.BackgroundTransparency=1;body.BorderSizePixel=0;body.ScrollBarThickness=4;body.AutomaticCanvasSize=Enum.AutomaticSize.Y;body.CanvasSize=UDim2.new()
+local layout=Instance.new("UIListLayout",body);layout.Padding=UDim.new(0,9)
+local render
+local tabs=#C.Passes>0 and {"Upgrades","Passes","Travel"} or {"Upgrades","Travel"}
+for i,name in ipairs(tabs) do button(panel,name:upper(),UDim2.fromOffset(180,35),UDim2.fromOffset(15+(i-1)*195,68),function() mode=name;render() end) end
+button(gui,"FAST TRAVEL",UDim2.fromOffset(125,38),UDim2.new(0,8,.5,-126),function() mode="Travel";panel.Visible=true;render() end)
+button(gui,"UPGRADES",UDim2.fromOffset(125,38),UDim2.new(0,8,.5,84),function() mode="Upgrades";panel.Visible=true;render() end)
+player:GetAttributeChangedSignal("OpenExpansionShop"):Connect(function() mode="Upgrades";panel.Visible=true;render() end)
+local productCache={}
+render=function()
+ if not state then return end;heading.Text=mode:upper()
+ for _,v in ipairs(body:GetChildren()) do if v:IsA("GuiObject") then v:Destroy() end end
+ if mode=="Upgrades" then
+  for _,item in {{"Damage",100,"+10% base damage per level"},{"Coins",150,"+5% battle coins per level"},{"Speed",100,"Faster walking and sprinting"}} do
+   local level=state.upgrades and state.upgrades[item[1]] or 0;local cost=item[2]*(level+1)^2
+   button(body,item[1].." • Lv "..level.."/"..C.UpgradeMax.."\n"..item[3].." • "..(level>=C.UpgradeMax and "MAX" or cost.." coins"),UDim2.fromOffset(555,78),UDim2.new(),function() api:FireServer("Upgrade",item[1]) end)
+  end
+ elseif mode=="Travel" then
+  for i,name in ipairs(C.Areas) do local unlocked=i<=(state.unlocked or 1);button(body,(unlocked and "TRAVEL: " or "LOCKED: ")..name,UDim2.fromOffset(555,48),UDim2.new(),function() if unlocked then api:FireServer("Travel",i);panel.Visible=false end end) end
+ else
+  for _,pass in ipairs(C.Passes) do
+   local owns=state.passes and state.passes[pass.Kind]
+   local b=button(body,pass.Name.."\n"..pass.Description.."\n"..(owns and "OWNED" or pass.Id<=0 and "Coming soon" or "Loading price..."),UDim2.fromOffset(555,88),UDim2.new(),function()
+    local info=productCache[pass.Id];if pass.Id>0 and not owns and info and info.IsForSale then Market:PromptGamePassPurchase(player,pass.Id) end
+   end)
+   if pass.Id>0 and not owns then task.spawn(function()
+    local info=productCache[pass.Id]
+    if not info then local ok,result=pcall(function() return Market:GetProductInfoAsync(pass.Id,Enum.InfoType.GamePass) end);if ok then info=result;productCache[pass.Id]=info end end
+    if b.Parent then b.Text=pass.Name.."\n"..pass.Description.."\n"..(info and info.IsForSale and ("R$ "..tostring(info.PriceInRobux)) or "Not available") end
+   end) end
+  end
+ end
+end
+local sprint=false
+Input.InputBegan:Connect(function(input,processed) if not Input:GetFocusedTextBox() and input.KeyCode==Enum.KeyCode.LeftShift then sprint=true;api:FireServer("Sprint",true) end end)
+Input.InputEnded:Connect(function(input) if input.KeyCode==Enum.KeyCode.LeftShift then sprint=false;api:FireServer("Sprint",false) end end)
+Input.WindowFocusReleased:Connect(function() sprint=false;api:FireServer("Sprint",false) end)
+shared.Action.OnClientEvent:Connect(function(d) state=d;if panel.Visible then render() end end)
+-- A private cinematic for each player's clash. Server owns the score/result.
+local battle
+local function damageNumber(position,amount,win)
+ if not amount then return end
+ local anchor=Instance.new("Part",workspace);anchor.Size=Vector3.one*.1;anchor.Position=position+Vector3.new(0,2,0);anchor.Transparency=1;anchor.Anchored=true;anchor.CanCollide=false
+ local gui=Instance.new("BillboardGui",anchor);gui.Size=UDim2.fromOffset(180,60);gui.AlwaysOnTop=true
+ local label=Instance.new("TextLabel",gui);label.Size=UDim2.fromScale(1,1);label.BackgroundTransparency=1;label.Text="−"..amount.." HP";label.Font=Enum.Font.GothamBlack;label.TextSize=30;label.TextStrokeTransparency=.4;label.TextColor3=win and Color3.fromRGB(255,226,128) or Color3.fromRGB(255,126,133)
+ Tween:Create(anchor,TweenInfo.new(1),{Position=anchor.Position+Vector3.new(0,3,0)}):Play();Tween:Create(label,TweenInfo.new(1),{TextTransparency=1,TextStrokeTransparency=1}):Play();Debris:AddItem(anchor,1.1)
+end
+local function cleanup()
+ local b=battle;if not b then return end;battle=nil
+ for _,c in ipairs(b.connections) do c:Disconnect() end
+ if b.gui then b.gui:Destroy() end;if b.fx then b.fx:Destroy() end
+ local cam=workspace.CurrentCamera;cam.CameraType=b.cameraType;cam.FieldOfView=b.fov
+ local hum=player.Character and player.Character:FindFirstChildOfClass("Humanoid");if hum then cam.CameraSubject=hum;hum:UnequipTools() end
+ player:SetAttribute("ClashActive",false)
+end
+local function makeSlug(s,powered)
+ if forms then return forms.Build(s,powered) end
+ local library=shared:FindFirstChild("OwnedSlugModels") or shared.SlugModels;local names={"Ember","Tide","Bloom","Spark","Frost","Shade","Nova"};return library[s.modelKey or names[s.element]]:Clone()
+end
+local function tap()
+ local b=battle;if b and b.ready and not b.result then api:FireServer("Tap",nil,b.token) end
+end
+Input.InputBegan:Connect(function(input,processed) if not processed and input.KeyCode==Enum.KeyCode.Space then tap() end end)
+event.OnClientEvent:Connect(function(packet)
+ if packet.Kind=="Cancel" then cleanup();return end
+ if packet.Kind=="Score" then if battle then battle.score=packet.Score;battle.count.Text=packet.Score.." / "..battle.target.." TAPS";battle.fill.Size=UDim2.fromScale(math.min(1,packet.Score/battle.target),1) end;return end
+ if packet.Kind=="Result" then
+  local b=battle;if not b then return end;b.ready=false;b.result=true;b.title.Text=packet.Win and "CLASH WON!" or "CLASH LOST!"
+  local target=packet.Win and b.enemyPosition or b.playerPosition
+  local winner=packet.Win and b.playerPose or b.enemyPose
+  Tween:Create(winner,TweenInfo.new(1.1),{Value=CFrame.lookAt(target,target+(target-b.meet).Unit)}):Play()
+  task.delay(1.1,function() if battle==b then damageNumber(target,packet.Damage,packet.Win);if FX then FX.Hit(target,packet.Win and b.color or Color3.fromRGB(255,135,108),packet.Win and b.slug.element or 1) end end end)
+  task.delay(1.4,function() if battle==b then cleanup() end end);return
+ end
+ if packet.Kind~="Begin" then return end
+ cleanup();panel.Visible=false
+ local root=player.Character and player.Character:FindFirstChild("HumanoidRootPart");if not root then return end
+ local camera=workspace.CurrentCamera
+ local b={connections={},token=packet.Token,target=packet.Target,score=0,slug=packet.Slug,cameraType=camera.CameraType,fov=camera.FieldOfView};battle=b;player:SetAttribute("ClashActive",true)
+ b.playerPosition=root.Position+Vector3.new(0,2,0);local gun=player.Character:FindFirstChild("Slug Pistol");local muzzle=gun and gun:FindFirstChild("Muzzle",true);if muzzle then b.playerPosition=muzzle.WorldPosition end;b.enemyPosition=Vector3.new((packet.Area-1)*120,5,-20)
+ local meet=(b.playerPosition+b.enemyPosition)/2;b.meet=meet
+ b.fx=Instance.new("Folder",workspace);Debris:AddItem(b.fx,15)
+ local mine=makeSlug(packet.Slug,false);mine.Parent=b.fx;mine:ScaleTo(.28)
+ local enemyData={element=(packet.Area-1)%7+1,name="Trainer Slug"}
+ local enemy=makeSlug(enemyData,false);enemy.Parent=b.fx;enemy:ScaleTo(.28)
+ b.color=mine.PrimaryPart.Color
+ local p1=Instance.new("CFrameValue",b.fx);p1.Value=CFrame.lookAt(b.playerPosition,meet);b.playerPose=p1
+ local p2=Instance.new("CFrameValue",b.fx);p2.Value=CFrame.lookAt(b.enemyPosition,meet);b.enemyPose=p2
+ table.insert(b.connections,Run.RenderStepped:Connect(function() if battle==b then mine:PivotTo(p1.Value);enemy:PivotTo(p2.Value) end end))
+ local core=Instance.new("Part",b.fx);core.Shape=Enum.PartType.Ball;core.Material=Enum.Material.Neon;core.Color=b.color:Lerp(Color3.new(1,1,1),.4);core.Anchored=true;core.CanCollide=false;core.Transparency=.35;core.Position=meet
+ table.insert(b.connections,Run.RenderStepped:Connect(function() if battle==b then core.Size=Vector3.one*(1.3+math.sin(os.clock()*8)*.12+math.min(1,b.score/b.target)*.7) end end))
+ if FX then FX.Muzzle(b.playerPosition,b.color);FX.Muzzle(b.enemyPosition,enemy.PrimaryPart.Color);FX.Sound("Cry",b.playerPosition);FX.Sound("Powerup",meet);FX.Trail(mine);FX.Trail(enemy) end
+ task.delay(.35,function()
+  if battle~=b then return end
+  mine:Destroy();enemy:Destroy();mine=makeSlug(packet.Slug,true);enemy=makeSlug(enemyData,true);mine.Parent=b.fx;enemy.Parent=b.fx;mine:ScaleTo(.8);enemy:ScaleTo(.8)
+  if FX then FX.Trail(mine);FX.Trail(enemy);FX.Transform(p1.Value.Position,b.color) end
+ end)
+ camera.CameraType=Enum.CameraType.Scriptable;camera.FieldOfView=72;camera.CFrame=CFrame.lookAt(meet+Vector3.new(18,10,18),meet)
+ Tween:Create(p1,TweenInfo.new(1.2),{Value=CFrame.lookAt(meet+Vector3.new(0,0,2),b.enemyPosition)}):Play()
+ Tween:Create(p2,TweenInfo.new(1.2),{Value=CFrame.lookAt(meet-Vector3.new(0,0,2),b.playerPosition)}):Play()
+ b.gui=Instance.new("ScreenGui",player.PlayerGui);b.gui.Name="ClashMinigame";b.gui.DisplayOrder=95;b.gui.IgnoreGuiInset=true
+ b.title=text(b.gui,"SLUG CLASH",UDim2.fromScale(.8,.08),UDim2.fromScale(.1,.1),28)
+ local tapButton=button(b.gui,"TAP! / SPACE",UDim2.fromOffset(260,85),UDim2.new(.5,-130,1,-135),tap)
+ b.count=text(b.gui,"GET READY",UDim2.fromOffset(300,35),UDim2.new(.5,-150,1,-190),20)
+ local track=Instance.new("Frame",b.gui);track.Size=UDim2.fromOffset(300,14);track.Position=UDim2.new(.5,-150,1,-210);track.BackgroundColor3=Color3.fromRGB(49,57,79);Instance.new("UICorner",track)
+ b.fill=Instance.new("Frame",track);b.fill.Size=UDim2.fromScale(0,1);b.fill.BackgroundColor3=Color3.fromRGB(130,255,183);Instance.new("UICorner",b.fill)
+ task.delay(math.max(0,(packet.StartAt or (workspace:GetServerTimeNow()+1.4))-workspace:GetServerTimeNow()),function()
+  if battle~=b then return end;b.ready=true;b.start=os.clock();if FX then FX.Transform(meet,b.color) end
+  table.insert(b.connections,Run.RenderStepped:Connect(function()
+   if battle~=b or b.result then return end
+   local remaining=math.max(0,(packet.EndAt or (workspace:GetServerTimeNow()+packet.Duration))-workspace:GetServerTimeNow());b.title.Text=string.format("CLASH • %.1fs",remaining);b.count.Text=b.score.." / "..b.target.." TAPS"
+   if remaining<=0 then b.ready=false;tapButton.Text="RESOLVING..." end
+  end))
+ end)
+ task.delay(12,function() if battle==b then cleanup() end end)
+end)
+player.CharacterAdded:Connect(cleanup)
+shared.Action.OnClientEvent:Connect(function(d) if battle and not d.enemy then cleanup() end end)
+-- Extra rarity flash/confetti at the actual capsule result.
+local spin=shared:FindFirstChild("CapsuleSpin")
+if spin then spin.OnClientEvent:Connect(function(packet)
+ task.delay(4.8,function()
+  local fx=Instance.new("ScreenGui",player.PlayerGui);fx.DisplayOrder=125;fx.IgnoreGuiInset=true
+  local color=({Color3.fromRGB(184,200,210),Color3.fromRGB(126,242,165),Color3.fromRGB(105,190,255),Color3.fromRGB(189,142,255),Color3.fromRGB(255,220,108),Color3.fromRGB(255,145,210),Color3.fromRGB(143,255,240)})[packet.winner.rarity]
+  for i=1,12+packet.winner.rarity*2 do
+   local p=Instance.new("Frame",fx);p.Size=UDim2.fromOffset(6,11);p.Position=UDim2.fromScale(math.random(),-.05);p.Rotation=math.random(0,180);p.BackgroundColor3=color;p.BorderSizePixel=0
+   Tween:Create(p,TweenInfo.new(1.5+math.random()),{Position=UDim2.fromScale(math.random(),1.1),Rotation=p.Rotation+240,BackgroundTransparency=1}):Play()
+  end
+  Debris:AddItem(fx,3)
+ end)
+end) end
+shared.Action:FireServer("Sync");api:FireServer("Sync")
+]====]
+client.Parent=SP
+print("EXPANSION INSTALLED: Shift sprint, fast travel, six areas, coin upgrades, tapping clashes and extra FX.")
+print("Game passes are deferred. The shop uses earned coins only.")
